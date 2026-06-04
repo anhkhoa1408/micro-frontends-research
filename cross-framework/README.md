@@ -283,53 +283,6 @@ Each remote's config specifies:
 
 ---
 
-## Getting Started
-
-### Prerequisites
-
-- Node.js 18+
-- npm 9+
-
-### Installation
-
-```bash
-# Install all dependencies
-cd cross-framework/app-host && npm install
-cd cross-framework/app-remote-1 && npm install
-cd cross-framework/app-remote-2 && npm install
-cd cross-framework/app-remote-3 && npm install
-```
-
-### Running the Application
-
-**Important:** Start all remotes before the host, so their `remoteEntry.js` manifests are available when the host boots.
-
-```bash
-# Terminal 1 — React remote
-cd cross-framework/app-remote-1 && npm run dev      # → http://localhost:5175
-
-# Terminal 2 — Vue remote
-cd cross-framework/app-remote-2 && npm run dev      # → http://localhost:5174
-
-# Terminal 3 — Angular remote
-cd cross-framework/app-remote-3 && npm start        # → http://localhost:5176
-
-# Terminal 4 — Angular host (start last)
-cd cross-framework/app-host && npm start            # → http://localhost:4200
-```
-
-### Accessing the Application
-
-| URL                           | Description                                 |
-| ----------------------------- | ------------------------------------------- |
-| http://localhost:4200/react   | React app rendered inside Angular host      |
-| http://localhost:4200/vue     | Vue app rendered inside Angular host        |
-| http://localhost:4200/angular | Angular remote rendered inside Angular host |
-
-Each remote can also run independently at its own port for standalone development.
-
----
-
 ## Tech Stack
 
 | App          | Framework | Version | Bundler | Module Federation Plugin                |
@@ -407,3 +360,258 @@ Both the host and Angular remote use `import('./bootstrap')` in their `main.ts`.
 - **React & Vue remotes**: Use Vite because `@module-federation/vite` provides first-class Vite support with faster dev server and HMR.
 
 Both produce compatible `remoteEntry.js` manifests that follow the Module Federation protocol.
+
+---
+
+## Cross-MFE Communication
+
+Communication between micro frontends is one of the trickiest parts of MFE architecture. Since each MFE may use a different framework with its own state management, we need a **framework-agnostic** approach.
+
+### Two Mechanisms
+
+This project implements both approaches, used together:
+
+#### 1. Shared Event Bus (Internal Pub/Sub)
+
+A singleton `EventBus` instance lives on `window.__MFE_EVENT_BUS__` and is shared across all MFEs loaded on the same page. Any MFE can publish or subscribe:
+
+```typescript
+// Any MFE can emit
+eventBus.emit("global:message", { from: "React MFE", text: "Hello!" });
+
+// Any MFE can subscribe
+const sub = eventBus.on("global:message", (payload) => {
+  console.log(payload.from, payload.text);
+});
+
+// Cleanup when component unmounts
+sub.unsubscribe();
+```
+
+**When to use:** Complex state sharing, multiple subscribers, need cleanup control.
+
+#### 2. Browser Custom Events
+
+Every `eventBus.emit()` also dispatches a `CustomEvent` on `window` with a `mfe:` prefix:
+
+```javascript
+// Fired automatically by eventBus.emit('global:message', data)
+// Equivalent to:
+window.dispatchEvent(new CustomEvent("mfe:global:message", { detail: data }));
+
+// Listen from any framework (or vanilla JS):
+window.addEventListener("mfe:global:message", (e) => {
+  console.log(e.detail);
+});
+```
+
+**When to use:** Simple fire-and-forget notifications, integration with non-MFE code, cross-tab communication (via storage events).
+
+### How Props Are Passed to Remotes
+
+The host passes both `auth` state and the `eventBus` instance to each remote via the `mount()` function:
+
+```typescript
+// Host wrapper component (Angular)
+mount(element, {
+  auth: authService.getState(), // { isAuthenticated, user, token }
+  eventBus, // Shared event bus singleton
+});
+```
+
+Each remote receives these props and integrates them into its own framework:
+
+| Framework | How props are consumed                                                           |
+| --------- | -------------------------------------------------------------------------------- |
+| React     | Passed as component props: `<App auth={props.auth} eventBus={props.eventBus} />` |
+| Vue       | Passed via `createApp(App, { hostProps: props })` → `defineProps()`              |
+| Angular   | Injected via `InjectionToken`: `@Inject(MFE_PROPS) props: MountProps`            |
+
+### Communication Flow Example
+
+```
+React MFE                     Event Bus                    Vue MFE
+    │                             │                           │
+    │── emit('global:message') ──►│                           │
+    │                             │── notify subscriber ─────►│
+    │                             │                           │
+    │                             │   Also dispatches:        │
+    │                             │   CustomEvent on window   │
+    │                             │                           │
+```
+
+---
+
+## Authentication
+
+### Architecture
+
+```
+┌─────────────┐       POST /api/auth/login       ┌──────────────┐
+│  Angular    │  ──────────────────────────────►  │  Auth Server │
+│  Host       │  ◄──────────────────────────────  │  (port 3001) │
+│  (Login UI) │       { token, user }             │  Express+JWT │
+└──────┬──────┘                                   └──────────────┘
+       │
+       │  Stores token + user in localStorage
+       │  Notifies all subscribers
+       │
+       ▼
+┌──────────────────────────────────────────────────────┐
+│              AuthService (singleton on window)         │
+│                                                       │
+│  • login(credentials) → fetch → store → notify       │
+│  • logout() → clear storage → notify                 │
+│  • getState() → { isAuthenticated, user, token }     │
+│  • subscribe(listener) → called on every change      │
+│  • Dispatches CustomEvent 'mfe:auth:changed'         │
+│                                                       │
+│  Storage: localStorage('mfe_auth_token')             │
+│           localStorage('mfe_auth_user')              │
+└──────────────────────────────────────────────────────┘
+       │
+       │  Auth state passed to remotes via mount(el, { auth })
+       │
+       ▼
+┌────────────┐  ┌────────────┐  ┌────────────┐
+│ React MFE  │  │  Vue MFE   │  │ Angular MFE│
+│            │  │            │  │            │
+│ Shows user │  │ Shows user │  │ Shows user │
+│ info       │  │ info       │  │ info       │
+└────────────┘  └────────────┘  └────────────┘
+```
+
+### How It Works
+
+1. **User visits a protected route** → Angular's `authGuard` checks `authService.isAuthenticated()`
+2. **If not authenticated** → Redirects to `/login`
+3. **User submits login form** → `authService.login()` calls `POST /api/auth/login`
+4. **Auth server validates credentials** → Returns JWT token + user object
+5. **AuthService stores token/user** in `localStorage` and notifies all subscribers
+6. **Host shell updates** → Shows username + logout button in header
+7. **User navigates to MFE route** → Guard passes, wrapper mounts remote with auth state
+8. **Remote receives auth** → Displays current user info
+
+### Auth Guard (Route Protection)
+
+```typescript
+const authGuard = () => {
+  const router = inject(Router);
+  if (authService.isAuthenticated()) {
+    return true;
+  }
+  return router.createUrlTree(["/login"]);
+};
+
+export const routes: Routes = [
+  { path: "login", component: LoginComponent },
+  { path: "react", component: ReactWrapperComponent, canActivate: [authGuard] },
+  { path: "vue", component: VueWrapperComponent, canActivate: [authGuard] },
+  { path: "angular", component: AngularRemoteWrapperComponent, canActivate: [authGuard] },
+];
+```
+
+### Cross-Tab Sync
+
+The `AuthService` listens to `window.storage` events, so logging out in one tab automatically logs out all other tabs showing the same application.
+
+### Auth Server
+
+A simple Express server with hardcoded users (for demo purposes):
+
+| Username | Password | Roles       |
+| -------- | -------- | ----------- |
+| admin    | admin123 | admin, user |
+| user     | user123  | user        |
+
+Endpoints:
+
+- `POST /api/auth/login` — Returns `{ token, user }` on valid credentials
+- `GET /api/auth/me` — Returns current user (requires `Authorization: Bearer <token>`)
+- `GET /api/auth/health` — Health check
+
+---
+
+## Getting Started (Updated)
+
+### Prerequisites
+
+- Node.js 18+
+- npm 9+
+
+### Installation
+
+```bash
+cd cross-framework/auth-server && npm install
+cd cross-framework/app-host && npm install
+cd cross-framework/app-remote-1 && npm install
+cd cross-framework/app-remote-2 && npm install
+cd cross-framework/app-remote-3 && npm install
+```
+
+### Running the Application
+
+Start services in this order:
+
+```bash
+# Terminal 1 — Auth Server
+cd cross-framework/auth-server && npm run dev       # → http://localhost:3001
+
+# Terminal 2 — React remote
+cd cross-framework/app-remote-1 && npm run dev      # → http://localhost:5175
+
+# Terminal 3 — Vue remote
+cd cross-framework/app-remote-2 && npm run dev      # → http://localhost:5174
+
+# Terminal 4 — Angular remote
+cd cross-framework/app-remote-3 && npm start        # → http://localhost:5176
+
+# Terminal 5 — Angular host (start last)
+cd cross-framework/app-host && npm start            # → http://localhost:4200
+```
+
+### Test Flow
+
+1. Open http://localhost:4200 → Redirects to `/login`
+2. Login with `admin` / `admin123`
+3. Navigate between `/react`, `/vue`, `/angular` tabs
+4. Click "Send Message to Other MFEs" in any remote
+5. Navigate to another remote → See the received messages
+6. Click "Logout" → Redirected to login
+
+---
+
+## Updated Project Structure
+
+```
+cross-framework/
+├── shared/                            # Shared libraries (framework-agnostic)
+│   ├── auth/                          # Authentication service
+│   │   └── src/
+│   │       ├── index.ts               # Public API
+│   │       ├── auth-service.ts        # AuthService singleton (login, logout, subscribe)
+│   │       └── types.ts              # User, AuthState, LoginCredentials interfaces
+│   └── event-bus/                     # Cross-MFE event bus
+│       └── src/
+│           ├── index.ts               # Public API
+│           └── event-bus.ts           # EventBus singleton (emit, on, once, clear)
+│
+├── auth-server/                       # Express + JWT auth server (port 3001)
+│   └── src/
+│       └── server.ts                  # Login endpoint, token verification
+│
+├── app-host/                          # Angular 20 — Shell/Host
+│   ├── webpack.config.js              # Module Federation: 3 remotes
+│   └── src/app/
+│       ├── app.ts                     # Shell component (auth state in header)
+│       ├── app.html                   # Navigation + router-outlet
+│       ├── app.routes.ts              # Routes with authGuard
+│       ├── login.component.ts         # Login form
+│       ├── react-wrapper.component.ts # Mounts React with { auth, eventBus }
+│       ├── vue-wrapper.component.ts   # Mounts Vue with { auth, eventBus }
+│       └── angular-remote-wrapper.component.ts
+│
+├── app-remote-1/ (React)              # Receives props, uses eventBus
+├── app-remote-2/ (Vue)                # Receives props, uses eventBus
+└── app-remote-3/ (Angular)            # Receives props via InjectionToken
+```
