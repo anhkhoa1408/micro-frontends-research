@@ -14,7 +14,7 @@ export default defineConfig({
       name: "app-remote-2",
       filename: "remoteEntry.js",
       exposes: {
-        "./VueApp": "./src/components/App.vue",
+        "./VueApp": "./src/bootstrap",
       },
       shared: ["vue"],
     }),

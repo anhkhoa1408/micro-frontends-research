@@ -10,7 +10,7 @@ export default defineConfig({
       name: "app-remote-1",
       filename: "remoteEntry.js",
       exposes: {
-        "./App": "./src/App",
+        "./App": "./src/bootstrap",
       },
       shared: ["react", "react-dom"],
     }),
