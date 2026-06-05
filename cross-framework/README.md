@@ -298,15 +298,33 @@ Each remote's config specifies:
 
 ```
 cross-framework/
+├── shared/                            # Shared libraries (framework-agnostic)
+│   ├── auth/                          # Authentication service
+│   │   └── src/
+│   │       ├── index.ts               # Public API
+│   │       ├── auth-service.ts        # AuthService singleton (login, logout, subscribe)
+│   │       └── types.ts              # User, AuthState, LoginCredentials interfaces
+│   └── event-bus/                     # Cross-MFE event bus
+│       └── src/
+│           ├── index.ts               # Public API
+│           └── event-bus.ts           # EventBus singleton (emit, on, once, clear)
+│
+├── auth-server/                       # Express + JWT auth server (port 3001)
+│   └── src/
+│       └── server.ts                  # Login endpoint, token verification
+│
 ├── app-host/                          # Angular 20 — Shell/Host application
 │   ├── webpack.config.js              # Module Federation: declares all remotes
 │   ├── src/
 │   │   ├── main.ts                    # Entry point (dynamic import for MF compatibility)
 │   │   ├── bootstrap.ts              # Bootstraps Angular application
 │   │   └── app/
-│   │       ├── app.routes.ts          # Maps URL paths to wrapper components
-│   │       ├── react-wrapper.component.ts      # Loads & mounts React remote
-│   │       ├── vue-wrapper.component.ts        # Loads & mounts Vue remote
+│   │       ├── app.ts                 # Shell component (auth state in header)
+│   │       ├── app.html               # Navigation + router-outlet
+│   │       ├── app.routes.ts          # Routes with authGuard
+│   │       ├── login.component.ts     # Login form
+│   │       ├── react-wrapper.component.ts      # Mounts React with { auth, eventBus }
+│   │       ├── vue-wrapper.component.ts        # Mounts Vue with { auth, eventBus }
 │   │       └── angular-remote-wrapper.component.ts  # Loads & mounts Angular remote
 │   └── types/
 │       └── module-federation.d.ts     # TypeScript declarations for remote modules
@@ -315,13 +333,13 @@ cross-framework/
 │   ├── vite.config.ts                 # Module Federation: exposes ./App
 │   └── src/
 │       ├── bootstrap.tsx              # mount() / unmount() — entry for MF
-│       └── App.tsx                    # Main React component
+│       └── App.tsx                    # Main React component (receives props, uses eventBus)
 │
 ├── app-remote-2/                      # Vue 3 — Vite-based remote
 │   ├── vite.config.js                 # Module Federation: exposes ./VueApp
 │   └── src/
 │       ├── bootstrap.js               # mount() / unmount() — entry for MF
-│       └── App.vue                    # Main Vue component
+│       └── App.vue                    # Main Vue component (receives props, uses eventBus)
 │
 └── app-remote-3/                      # Angular 20 — Webpack-based remote
     ├── webpack.config.js              # Module Federation: exposes ./AngularApp
@@ -329,7 +347,7 @@ cross-framework/
         ├── main.ts                    # Dynamic import for MF compatibility
         ├── bootstrap.ts               # mount() / unmount() via Angular Elements
         └── app/
-            └── remote-app.component.ts  # Standalone Angular component
+            └── remote-app.component.ts  # Standalone component (receives props via InjectionToken)
 ```
 
 ---
@@ -578,40 +596,3 @@ cd cross-framework/app-host && npm start            # → http://localhost:4200
 4. Click "Send Message to Other MFEs" in any remote
 5. Navigate to another remote → See the received messages
 6. Click "Logout" → Redirected to login
-
----
-
-## Updated Project Structure
-
-```
-cross-framework/
-├── shared/                            # Shared libraries (framework-agnostic)
-│   ├── auth/                          # Authentication service
-│   │   └── src/
-│   │       ├── index.ts               # Public API
-│   │       ├── auth-service.ts        # AuthService singleton (login, logout, subscribe)
-│   │       └── types.ts              # User, AuthState, LoginCredentials interfaces
-│   └── event-bus/                     # Cross-MFE event bus
-│       └── src/
-│           ├── index.ts               # Public API
-│           └── event-bus.ts           # EventBus singleton (emit, on, once, clear)
-│
-├── auth-server/                       # Express + JWT auth server (port 3001)
-│   └── src/
-│       └── server.ts                  # Login endpoint, token verification
-│
-├── app-host/                          # Angular 20 — Shell/Host
-│   ├── webpack.config.js              # Module Federation: 3 remotes
-│   └── src/app/
-│       ├── app.ts                     # Shell component (auth state in header)
-│       ├── app.html                   # Navigation + router-outlet
-│       ├── app.routes.ts              # Routes with authGuard
-│       ├── login.component.ts         # Login form
-│       ├── react-wrapper.component.ts # Mounts React with { auth, eventBus }
-│       ├── vue-wrapper.component.ts   # Mounts Vue with { auth, eventBus }
-│       └── angular-remote-wrapper.component.ts
-│
-├── app-remote-1/ (React)              # Receives props, uses eventBus
-├── app-remote-2/ (Vue)                # Receives props, uses eventBus
-└── app-remote-3/ (Angular)            # Receives props via InjectionToken
-```
