@@ -20,7 +20,24 @@ export default defineConfig({
           entry: "http://localhost:6003/remoteEntry.js",
         },
       },
-      shared: ["react", "react-dom"],
+      shared: {
+        react: {
+          singleton: true,
+          requiredVersion: "^19.2.0",
+        },
+        "react-dom": {
+          singleton: true,
+          requiredVersion: "^19.2.0",
+        },
+        "react/": {
+          singleton: true,
+          requiredVersion: "^19.2.0",
+        },
+        "react-dom/": {
+          singleton: true,
+          requiredVersion: "^19.2.0",
+        },
+      },
     }),
   ],
   server: {
